@@ -12,7 +12,6 @@ WriteMakefile(
         'Test::More' => 0,
         'Compress::Zlib' => 0,
         'DBM::Deep' => 0,
-        'Data::Dumper::Simple' => 0,
         'Debug::Simple' => 0,
         'IO::Uncompress::Unzip' => 0,
         'LWP' => 0,

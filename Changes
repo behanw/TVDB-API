@@ -1,20 +1,23 @@
 Revision history for TVDB-API
 
+0.31    2008.11.10 18:53:15
+        Fix bug in getPossibleSeriesId (include language in URL)
+
 0.30    2008.11.04 16:57:16
         Add capability of new() arguments by hashref
-        Cache downloads per session for nocache
-        Support multiple levels of nocache
-        Layered API calls use $nocache-1 for lower layers
-        Return undef if no banner found in banner methods
-        Remove redundant calls to getSeriesID()
-        Make sure all warnings start with "TVDB::API"
-        Fix bug in docs for getSeriesInfo and getEpisodeBanner
         Add configuration variables
         Add getConf()/setconf()
-        Allow new to be called with named arguments
         Add getPossibleSeriesId
-        Cache download failures for getBanner()/getEpisode()
         Add maxSeason/maxEpisode checking
+        Allow new to be called with named arguments
+        Cache download failures for getBanner()/getEpisode()
+        Cache downloads per session for nocache
+        Fix bug in docs for getSeriesInfo and getEpisodeBanner
+        Layered API calls use $nocache-1 for lower layers
+        Make sure all warnings start with "TVDB::API"
+        Remove redundant calls to getSeriesID()
+        Return undef if no banner found in banner methods
+        Support multiple levels of nocache
         Update man page
 
 0.22    2008.10.07 18:04:00

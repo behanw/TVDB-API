@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:                TVDB-API
-version:             0.30
+version:             0.31
 abstract:            API to www.thetvdb.com
 license:             ~
 author:              
@@ -9,7 +9,6 @@ generated_by:        ExtUtils::MakeMaker version 6.42
 distribution_type:   module
 requires:     
     Compress::Zlib:                0
-    Data::Dumper::Simple:          0
     DBM::Deep:                     0
     Debug::Simple:                 0
     IO::Uncompress::Unzip:         0

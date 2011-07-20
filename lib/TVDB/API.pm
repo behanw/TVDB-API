@@ -8,7 +8,7 @@ use strict;
 
 use Compress::Zlib;
 use DBM::Deep;
-use Data::Dumper::Simple;
+use Data::Dumper;
 use Debug::Simple;
 use Encode qw(encode decode);
 use IO::Uncompress::Unzip;
@@ -18,12 +18,12 @@ use XML::Simple;
 
 use vars qw($VERSION %Defaults %Url);
 
-$VERSION = "0.30";
+$VERSION = "0.31";
 
 # TheTVDB Urls
 %Url = (
 	defaultURL	=> 'http://thetvdb.com',
-	getSeriesID	=> '%s/api/GetSeries.php?seriesname=%s',	# defaultURL, series_name
+	getSeriesID	=> '%s/api/GetSeries.php?seriesname=%s&language=%s',	# defaultURL, series_name, language
 	getMirrors	=> '%s/api/%s/mirrors.xml',			# defaultURL, apikey
 	bannerURL	=> '%s/banners/',				# baseBannerURL, append bannerFilename.ext
 	apiURL		=> '%s/api/%s',					# mirrorURL, apikey
@@ -73,6 +73,7 @@ sub new {
 	$self->setCacheDB($args->{cache});
 	$self->setApiKey($args->{apikey});
 	$self->{ua} = LWP::UserAgent->new;
+	$self->{ua}->env_proxy();
 	$self->setUserAgent($args->{useragent});
 	$self->{xml} = XML::Simple->new(
 		ForceArray => ['Actor', 'Banner', 'Episode', 'Mirror', 'Series'],
@@ -189,7 +190,6 @@ sub _download {
 	# Download URL
 	my $req = HTTP::Request->new(GET => $url);
 	my $res = $self->{ua}->request($req);
-	#print Dumper($res);
 
 	if ($res->content =~ /(?:404 Not Found|The page your? requested does not exist)/i) {
 		&warning("TVDB::API: download $url, 404 Not Found\n");
@@ -381,7 +381,6 @@ sub getUpdates {
 	my $banners = $self->{cache}->{Banner};
 	if (defined $self->{bannerPath}) {
 		for my $banner (@{$updates->{Banner}}) {
-			#print Dumper($banner);
 			# Don't update if we don't already have this series
 			next unless defined $series->{$banner->{Series}};
 			# Don't update if we haven't already downloaded this banner
@@ -404,7 +403,7 @@ sub getPossibleSeriesId {
 	my ($self, $name) = @_;
 
 	&verbose(2, "TVDB::API: Get possbile series id for $name\n");
-	my $xml = $self->_download($Url{getSeriesID}, $Url{defaultURL}, $name);
+	my $xml = $self->_download($Url{getSeriesID}, $Url{defaultURL}, $name, $self->{lang});
 	return undef unless $xml;
 	my $data = XMLin($xml, ForceArray=>['Series']);
 
@@ -477,7 +476,6 @@ sub getSeries {
 		$self->getSeriesAll($sid, 1);
 	}
 
-	#print Dumper($series->{$sid});
 	return $series->{$sid};
 }
 
@@ -526,7 +524,6 @@ sub getSeriesAll {
 		$series->{$sid}->{Banner} = $data->{Banner};
 	}
 
-	#print Dumper($self->{cache}->{Series}->{$sid});
 	return $series->{$sid};
 }
 
@@ -536,7 +533,6 @@ sub getSeriesName {
 
 	my $series = $self->getSeries($sid, $nocache);
 	return undef unless $series;
-	#print Dumper($series); print "Series Name: ".$series->{SeriesName}."\n"; exit 0;
 
 	return $series->{SeriesName};
 }
@@ -566,6 +562,18 @@ sub getSeriesActors {
 	}
 
 	return $series->{Actor};
+}
+
+###############################################################################
+sub getSeriesActorsSorted {
+	my ($self, $name, $nocache) = @_;
+    my $data = $self->getSeriesActors($name, $nocache);
+    my @sorted = sort {
+	    $a->{SortOrder} <=> $b->{SortOrder}
+	    && $a->{Role} cmp $b->{Role}
+	    && $a->{Name} cmp $b->{Name}
+	} values %$data;
+    return \@sorted;
 }
 
 ###############################################################################
@@ -807,6 +815,7 @@ sub getEpisode {
 			$cache->{Episode}->{$eid} = $ep;
 		} else {
 			$eid = 0;
+			$series->{$sid}->{Seasons}->[$season]->[$episode] = {};
 			$series->{$sid}->{Seasons}->[$season]->[$episode]->{lasttried} = time;
 		}
 	}
@@ -940,6 +949,7 @@ TVDB::API - API to www.thetvdb.com
   my $hashref = $tvdb->getSeries($series_name, [$nocache]);
   my $hashref = $tvdb->getSeriesAll($series_name, [$nocache]);
   my $hashref = $tvdb->getSeriesActors($series_name, [$nocache]);
+  my $hashref = $tvdb->getSeriesActorsSorted($series_name, [$nocache]);
   my $hashref = $tvdb->getSeriesBanners($series_name, $type, $type2, $value, [$nocache]);
   my $hashref = $tvdb->getSeriesInfo($series_name, key, [$nocache]);
   my $string = $tvdb->getSeriesBanner($series_name, [$buffer, [$nocache]]);
@@ -1127,6 +1137,12 @@ episodes are downloaded again even if they are in the cache database already.
 Get the actors for C<SERIESNAME> from thetvtb.com, which is returned as a
 hashref. If C<NOCACHE> is non-zero, then the list of actors are
 downloaded again even if they are in the cache database already.
+
+=item getSeriesActorsSorted(SERIESNAME, [NOCACHE])
+
+Get the actors for C<SERIESNAME> from thetvtb.com, which is returned as an
+arrayref sorted by SortOrder.  If C<NOCACHE> is non-zero, then the list of
+actors are downloaded again even if they are in the cache database already.
 
 =item getSeriesBanners(SERIESNAME, TYPE, TYPE2, VALUE, [NOCACHE])
 
