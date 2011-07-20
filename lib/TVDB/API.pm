@@ -18,7 +18,7 @@ use XML::Simple;
 
 use vars qw($VERSION %Url);
 
-$VERSION = "0.20";
+$VERSION = "0.21";
 
 # TheTVDB Urls
 %Url = (
