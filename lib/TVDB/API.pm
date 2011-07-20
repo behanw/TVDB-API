@@ -18,7 +18,7 @@ use XML::Simple;
 
 use vars qw($VERSION %Defaults %Url);
 
-$VERSION = "0.31";
+$VERSION = "0.32";
 
 # TheTVDB Urls
 %Url = (
@@ -183,6 +183,7 @@ sub _download {
 	# Make URL
 	$url = sprintf($fmt, $url, @parm);
 	&verbose(2, "TVDB::API: download: $url\n");
+	utf8::encode($url);
 
 	# Make sure we only download once even in a session
 	return $self->{dload}->{$url} if defined $self->{dload}->{$url};
@@ -405,9 +406,21 @@ sub getPossibleSeriesId {
 	&verbose(2, "TVDB::API: Get possbile series id for $name\n");
 	my $xml = $self->_download($Url{getSeriesID}, $Url{defaultURL}, $name, $self->{lang});
 	return undef unless $xml;
-	my $data = XMLin($xml, ForceArray=>['Series']);
+	my $data = XMLin($xml, ForceArray=>['Series'], KeyAttr=>{});
 
-	return $data->{Series};
+	# Build hashref to return
+	my $ret = {};
+	for my $series (@{$data->{Series}}) {
+		my $sid = $series->{id};
+		if (defined $ret->{$sid}) {
+			$ret->{$sid}->{altlanguage} = {};
+			$ret->{$sid}->{altlanguage}->{$series->{language}} = $series;
+		} else {
+			$ret->{$sid} = $series;
+		}
+	}
+
+	return $ret;
 }
 
 ###############################################################################
@@ -567,13 +580,13 @@ sub getSeriesActors {
 ###############################################################################
 sub getSeriesActorsSorted {
 	my ($self, $name, $nocache) = @_;
-    my $data = $self->getSeriesActors($name, $nocache);
-    my @sorted = sort {
-	    $a->{SortOrder} <=> $b->{SortOrder}
-	    && $a->{Role} cmp $b->{Role}
-	    && $a->{Name} cmp $b->{Name}
+	my $data = $self->getSeriesActors($name, $nocache);
+	my @sorted = sort {
+		$a->{SortOrder} <=> $b->{SortOrder}
+		&& $a->{Role} cmp $b->{Role}
+		&& $a->{Name} cmp $b->{Name}
 	} values %$data;
-    return \@sorted;
+	return \@sorted;
 }
 
 ###############################################################################

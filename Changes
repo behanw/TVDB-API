@@ -1,5 +1,9 @@
 Revision history for TVDB-API
 
+0.32    2008.11.16 10:35:45
+        Fix utf8 issues with query URLs
+        Handle multiple languages in getPossibleSeries()
+
 0.31    2008.11.10 18:53:15
         Fix bug in getPossibleSeriesId (include language in URL)
 
