@@ -18,7 +18,6 @@ This modules requires the following extra perl modules:
 
     Compress::Zlib
     DBM::Deep
-    Data::Dumper::Simple
     Debug::Simple
     IO::Uncompress::Unzip
     LWP

@@ -4,6 +4,7 @@
 
 package TVDB::API;
 
+require 5.008008;
 use strict;
 
 use Compress::Zlib;
@@ -18,7 +19,7 @@ use XML::Simple;
 
 use vars qw($VERSION %Defaults %Url);
 
-$VERSION = "0.32";
+$VERSION = "0.33";
 
 # TheTVDB Urls
 %Url = (
@@ -33,8 +34,8 @@ $VERSION = "0.32";
 	getSeriesActors	=> '%s/series/%s/actors.xml',			# apiURL, seriesid
 	getSeriesBanner	=> '%s/series/%s/banners.xml',			# apiURL, seriesid
 	getEpisode	=> '%s/series/%s/default/%s/%s/%s.xml',		# apiURL, seriesid, season, episode, language
-	#getEpisodeDVD	=> '%s/series/%s/dvd/%s/%s/%s.xml',		# apiURL, seriesid, season, episode, language
-	#getEpisodeAbs	=> '%s/series/%s/absolute/%s/%s.xml',		# apiURL, seriesid, absolute_episode, language
+	getEpisodeDVD	=> '%s/series/%s/dvd/%s/%s/%s.xml',		# apiURL, seriesid, season, episode, language
+	getEpisodeAbs	=> '%s/series/%s/absolute/%s/%s.xml',		# apiURL, seriesid, absolute_episode, language
 	getEpisodeID	=> '%s/episodes/%s/%s.xml',			# apiURL, episodeid, language
 	getUpdates	=> '%s/updates/updates_%s.%s',			# apiURL, (day|week|month|all), (xml|zip)
 
@@ -427,6 +428,7 @@ sub getPossibleSeriesId {
 # Fill in the blank
 sub getSeriesId {
 	my ($self, $name, $nocache) = @_;
+	return undef unless defined $name;
 
 	# see if $name is a series id already
 	return $name if $name =~ /^\d+$/ && $name > 70000;
@@ -803,7 +805,8 @@ sub getEpisode {
 		&warning("TBDB::API: Invalid episode $episode in season $season for $name\n");
 		return undef;
 	}
-	my $data = $self->getSeason($name, $season, $nocache?$nocache-1:0);
+	my $sid = $self->getSeriesId($name);
+	my $data = $self->getSeason($sid, $season, $nocache?$nocache-1:0);
 	return undef unless $data;
 
 	# See if we have to update the episode record
@@ -814,9 +817,8 @@ sub getEpisode {
 		&verbose(2, "TBDB::API: No episode $episode found for season $season of $name (cached)\n");
 		return undef;
 	}
-	unless (!$nocache && $eid && ref($eid) eq '' && $cache->{Episode}->{$eid}) {
+	unless (!$nocache && $eid && !ref($eid) && $cache->{Episode}->{$eid}) {
 		# Download episode
-		my $sid = $self->getSeriesId($name);
 		&verbose(1, "TVDB::API: Updating episode $episode from season $season for $name\n");
 		my $new = $self->_downloadXml($Url{getEpisode}, $sid, $season, $episode, $self->{lang});
 
@@ -840,6 +842,89 @@ sub getEpisode {
 	}
 
 	return $cache->{Episode}->{$eid};
+}
+
+###############################################################################
+sub getEpisodeAbs {
+	my ($self, $name, $abs, $nocache) = @_;
+	if ($abs < 0 || $abs > $self->{conf}->{maxEpisode}*$self->{conf}->{maxSeason}) {
+		&warning("TBDB::API: Invalid absolute episode $abs for $name\n");
+		return undef;
+	}
+	my $sid = $self->getSeriesId($name);
+	return undef unless $sid;
+	my $series = $self->getSeriesAll($sid, $nocache?$nocache-1:0);
+	return undef unless $series;
+
+	# Look for episode in cache
+	my $cache = $self->{cache};
+	unless ($nocache) {
+		foreach my $season (@{$series->{Seasons}}) {
+			foreach my $eid (@$season) {
+				next unless $eid;
+				my $ep = $cache->{Episode}->{$eid};
+				return $ep if $ep->{absolute_number} eq $abs;
+			}
+		}
+	}
+
+	# Download absolute episode
+	&verbose(1, "TVDB::API: Updating absolute episode $abs for $name\n");
+	my $new = $self->_downloadXml($Url{getEpisodeAbs}, $sid, $abs, $self->{lang});
+	if ($new) {
+		# Save episode in cache
+		my ($eid, $ep) = each %{$new->{Episode}};
+		$series->{$sid}->{Seasons} = [] unless $series->{$sid}->{Seasons};
+		$series->{$sid}->{Seasons}->[$ep->{SeasonNumber}]->[$ep->{EpisodeNumber}] = $eid;
+		$cache->{Episode}->{$eid} = $ep;
+		return $cache->{Episode}->{$eid};
+	}
+
+	&warning("TBDB::API: No absolute episode $abs found for $name\n");
+	return undef;
+}
+
+###############################################################################
+sub getEpisodeDVD {
+	my ($self, $name, $season, $episode, $nocache) = @_;
+	my $epmajor = int($episode);
+	if ($epmajor < 0 || $epmajor > $self->{conf}->{maxEpisode}) {
+		&warning("TBDB::API: Invalid DVD episode $episode in DVD season $season for $name\n");
+		return undef;
+	}
+	my $sid = $self->getSeriesId($name);
+	return undef unless $sid;
+	my $data = $self->getSeason($sid, $season, $nocache?$nocache-1:0);
+	return undef unless $data;
+
+	# Look for episode in cache
+	my $cache = $self->{cache};
+	my $series = $cache->{Series};
+	unless ($nocache) {
+		foreach my $eid (@$data) {
+			next unless $eid;
+			my $ep = $cache->{Episode}->{$eid};
+			my $de = $ep->{DVD_episodenumber};
+			return $ep if $de eq $episode
+		   			|| int($de) eq $episode
+		   			|| int($de) eq $epmajor;
+		}
+	}
+
+	# Download DVD episode
+	&verbose(1, "TVDB::API: Updating DVD episode $episode from DVD season $season for $name\n");
+	my $new = $self->_downloadXml($Url{getEpisodeDVD}, $sid, $season, $episode, $self->{lang});
+	if ($new) {
+		# Save episode in cache
+		my ($eid, $ep) = each %{$new->{Episode}};
+		$series->{$sid}->{Seasons} = [] unless $series->{$sid}->{Seasons};
+		$series->{$sid}->{Seasons}->[$ep->{SeasonNumber}]->[$ep->{EpisodeNumber}] = $eid;
+		$cache->{Episode}->{$eid} = $ep;
+		return $cache->{Episode}->{$eid};
+	}
+
+	&warning("TBDB::API: No DVD episode $episode found for DVD season $season of $name\n");
+	return undef;
 }
 
 ###############################################################################
@@ -981,6 +1066,8 @@ TVDB::API - API to www.thetvdb.com
 
   my $int = $tvdb->getMaxEpisode($series, $season, [$nocache]);
   my $hashref = $tvdb->getEpisode($series, $season, $episode, [$nocache]);
+  my $hashref = $tvdb->getEpisodeAbs($series, $absEpisode, [$nocache]);
+  my $hashref = $tvdb->getEpisodeDVD($series, $DVDseason, $DVDepisode, [$nocache]);
   my $hashref = $tvdb->getEpisodeId($episodeid, [$nocache]);
   my $hashref = $tvdb->getEpisodeByAirDate($series, $airdate, [$nocache]);
   my $string = $tvdb->getEpisodeInfo($series, $season, $episode, $info, [$nocache]);
@@ -1288,6 +1375,18 @@ the cache database already.
 
 The C<minEpisodeTime> configuration variable determines the maximum time a
 episode lookup failure will be cached.  (see getConf()/setConf()).
+
+=item getEpisodeAbs(SERIESNAME, ABSEPISODE, [NOCACHE])
+
+Return a hashref for the absolute episode (C<ABSEPISODE>) for C<SERIESNAME>.
+If C<NOCACHE> is non-zero, then the episode is downloaded again even if it is
+in the cache database already.
+
+=item getEpisodeDVD(SERIESNAME, SEASON, EPISODE, [NOCACHE])
+
+Return a hashref for the C<EPISODE> in C<SEASON> for C<SERIESNAME> in DVD
+order.  If C<NOCACHE> is non-zero, then the episode is downloaded again even if
+it is in the cache database already.
 
 =item getEpisodeId(EPISODEID, [NOCACHE])
 

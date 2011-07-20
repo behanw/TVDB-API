@@ -1,5 +1,9 @@
 Revision history for TVDB-API
 
+0.33    2008.12.19 16:02:43
+        Add getEpisodeAbs and getEpisodeDVD
+		Make sure perl is at least version 5.8
+
 0.32    2008.11.16 10:35:45
         Fix utf8 issues with query URLs
         Handle multiple languages in getPossibleSeries()
