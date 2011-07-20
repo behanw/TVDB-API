@@ -1,5 +1,31 @@
 Revision history for TVDB-API
 
-0.01    Date/time
+0.30    2008.11.04 16:57:16
+        Add capability of new() arguments by hashref
+        Cache downloads per session for nocache
+        Support multiple levels of nocache
+        Layered API calls use $nocache-1 for lower layers
+        Return undef if no banner found in banner methods
+        Remove redundant calls to getSeriesID()
+        Make sure all warnings start with "TVDB::API"
+        Fix bug in docs for getSeriesInfo and getEpisodeBanner
+        Add configuration variables
+        Add getConf()/setconf()
+        Allow new to be called with named arguments
+        Add getPossibleSeriesId
+        Cache download failures for getBanner()/getEpisode()
+        Add maxSeason/maxEpisode checking
+        Update man page
+
+0.22    2008.10.07 18:04:00
+        Add methods for getEpisodeByAirDate() and getRatingsForUser()
+
+0.21    2008.10.06 22:04:00
+        Fix bugs from CPAN testers
+
+0.20    2008.10.06 11:23:00
+        Change API for getBanners and all related methods
+
+0.10    2008.10.05 22:25:00
         First version, released on an unsuspecting world.
 

@@ -16,9 +16,9 @@ use LWP;
 use Storable;
 use XML::Simple;
 
-use vars qw($VERSION %Url);
+use vars qw($VERSION %Defaults %Url);
 
-$VERSION = "0.22";
+$VERSION = "0.30";
 
 # TheTVDB Urls
 %Url = (
@@ -38,39 +38,56 @@ $VERSION = "0.22";
 	getEpisodeID	=> '%s/episodes/%s/%s.xml',			# apiURL, episodeid, language
 	getUpdates	=> '%s/updates/updates_%s.%s',			# apiURL, (day|week|month|all), (xml|zip)
 
-    getEpisodeByAirDate     => '%s/api/GetEpisodeByAirDate.php?apikey=%s&seriesid=%s&airdate=%s&language=%s',
-    getRatingsForUser       => '%s/api/GetRatingsForUser.php?apikey=%s&accountid=%s&seriesid=%s',
-    getRatingsForUserAll    => '%s/api/GetRatingsForUser.php?apikey=%s&accountid=%s',
+	getEpisodeByAirDate	=> '%s/api/GetEpisodeByAirDate.php?apikey=%s&seriesid=%s&airdate=%s&language=%s',
+	getRatingsForUser	=> '%s/api/GetRatingsForUser.php?apikey=%s&accountid=%s&seriesid=%s',
+	getRatingsForUserAll	=> '%s/api/GetRatingsForUser.php?apikey=%s&accountid=%s',
+);
+
+%Defaults = (
+	maxSeason		=> 50,
+	maxEpisode		=> 50,
+	minUpdateTime	=> 3600*6,		# 6 hours 
+	minBannerTime	=> 3600*24*7,	# 1 week 
+	minEpisodeTime	=> 3600*24*7,	# 1 week 
 );
 
 ###############################################################################
 sub new {
 	my $self = bless {};
-	my $apikey = shift || die 'You need to get an apikey from http://thetvdb.com/?tab=apiregister';
-	my $lang = shift || 'en';
-	my $cache = shift || "$ENV{HOME}/.tvdb.db";
-	my @mirrors = @_;
+	%{$self->{conf}} = %Defaults;
 
-	$self->setCacheDB($cache);
-	$self->setApiKey($apikey);
+	my $args;
+	if (ref $_[0] eq 'HASH') {
+		# Subroutine arguments by hashref
+		$args = shift;
+	} else {
+		# Traditional subroutine arguments
+		$args = {};
+		($args->{apikey}, $args->{lang}, $args->{cache}, $args->{banner}, @{$args->{mirrors}}) = @_;
+	}
+	# Argument defaults
+	$args->{cache}     ||= "$ENV{HOME}/.tvdb.db";
+	$args->{apikey}    ||= die 'You need to get an apikey from http://thetvdb.com/?tab=apiregister';
+	$args->{useragent} ||= "TVDB::API/$VERSION";
 
+	$self->setCacheDB($args->{cache});
+	$self->setApiKey($args->{apikey});
 	$self->{ua} = LWP::UserAgent->new;
-	$self->setUserAgent("TVDB::API/$VERSION");
-
+	$self->setUserAgent($args->{useragent});
 	$self->{xml} = XML::Simple->new(
 		ForceArray => ['Actor', 'Banner', 'Episode', 'Mirror', 'Series'],
-		#KeyAttr => { Actor=> 'id', Banner=>'id', Episode=>'id', Mirror=>'id', Series=>'id' },
 		SuppressEmpty => 1,
 	);
 
-	if (@mirrors) {
-		$self->setMirrors(@mirrors);
+	if (@{$args->{mirrors}}) {
+		$self->setMirrors(@{$args->{mirrors}});
 	} else {
 		$self->chooseMirrors();
 	}
 
-	# The following use cache/apikey/ua/xml
-	$self->setLang($lang);
+	# The following must be after setCacheDB/setApiKey/setUserAgent/xml/setMirrors
+	$self->setLang($args->{lang});
+	$self->setBannerPath($args->{banner}) if $args->{banner};
 
 	return $self;
 }
@@ -82,7 +99,8 @@ sub setApiKey {
 	$self->_updateUrls();
 }
 sub setLang {
-	my ($self, $lang) = @_;
+	my $self = shift;
+	my $lang = shift || 'en';
 	my $langs = $self->getAvailableLanguages();
 	&verbose(3, "TVDB::API: Setting language to: $lang => $langs->{$lang}->{name}\n");
 	$self->{lang} = $lang;
@@ -133,22 +151,27 @@ sub _decompressCache {
 	# Decompress data and then unescape UTF-8 chars
 	return decode('utf8',Compress::Zlib::memGunzip($_[0])) ;
 }
-#sub readCache {
-#	my ($self, $key) = @_;
-#	return $self->{cache}->{$key};
-#}
-#sub updateCache {
-#	my ($self, $key, $data) = @_;
-#	$self->{cache}->{$key} = $data;
-#}
-#sub saveCache {
-#	my ($self, $key, $data) = @_;
-#	$self->{cache}->{$key} = $data;
-#}
 sub dumpCache {
 	my ($self) = @_;
 	my $cache = $self->{cache};
 	print Dumper($cache);
+}
+
+###############################################################################
+sub setConf {
+	my ($self, $key, $value) = @_;
+	if (ref $key eq 'HASH') {
+		while (my ($k, $v) = each %$key) {
+			$self->{conf}->{$k} = $v;
+		}
+	} else {
+		$self->{conf}->{$key} = $value;
+	}
+}
+sub getConf {
+	my ($self, $key) = @_;
+	return $self->{conf}->{$key} if $key && defined $self->{conf}->{$key};
+	return $self->{conf};
 }
 
 ###############################################################################
@@ -160,15 +183,20 @@ sub _download {
 	$url = sprintf($fmt, $url, @parm);
 	&verbose(2, "TVDB::API: download: $url\n");
 
+	# Make sure we only download once even in a session
+	return $self->{dload}->{$url} if defined $self->{dload}->{$url};
+
 	# Download URL
 	my $req = HTTP::Request->new(GET => $url);
 	my $res = $self->{ua}->request($req);
 	#print Dumper($res);
 
-	if ($res->content =~ /404 Not Found/) {
+	if ($res->content =~ /(?:404 Not Found|The page your? requested does not exist)/i) {
 		&warning("TVDB::API: download $url, 404 Not Found\n");
+		$self->{dload}->{$url} = 0;
 		return undef;
 	}
+	$self->{dload}->{$url} = $res->content;
 	return $res->content;
 }
 # Download Xml, remove empty tags, parse XML, and return hashref
@@ -193,7 +221,7 @@ sub _downloadApikeyXml {
 	my $xml = $self->_download($fmt, $self->{mirror}, $self->{apikey}, @parm);
 	return undef unless $xml;
 
-    $xml =~ s/seriesid>/id>/g;
+	$xml =~ s/seriesid>/id>/g;
 
 	# Remove empty tags
 	$xml =~ s/(<[^\/\s>]*\/>|<[^\/\s>]*><\/[^>]*>)//gs;
@@ -242,8 +270,8 @@ sub getAvailableMirrors {
 
 		# Break into lists of mirror types: xml/banner/zip
 		$self->{cache}->{Mirror} = {};
-		while (my ($key,$val) = each %{$data->{Mirror}}) {
-			my ($typemask, $url) = ($data->{typemask}, $data->{mirrorpath});
+		while (my ($key,$value) = each %{$data->{Mirror}}) {
+			my ($typemask, $url) = ($value->{typemask}, $value->{mirrorpath});
 			if ($typemask >= 4) { $typemask -= 4; push @{$cache->{Mirror}->{xml}}, $url; }
 			if ($typemask >= 2) { $typemask -= 2; push @{$cache->{Mirror}->{banner}}, $url; }
 			if ($typemask >= 1) { $typemask -= 1; push @{$cache->{Mirror}->{zip}}, $url; }
@@ -282,16 +310,22 @@ sub getAvailableLanguages {
 	return $self->{cache}->{Language};
 }
 
+sub _mtime {
+	my ($filename) = @_;
+	my @stat = stat($filename);
+	return $stat[9];
+}
+
 ###############################################################################
 sub getUpdates {
 	my $self = shift;
-	my $period = shift || 'guess';
+	my $period = lc shift || 'guess';
 
 	# Determin which update xml file to download
 	my $now = time;
 	if ($period =~ /^(guess|now)$/) {
 		my $diff = $now - $self->{cache}->{Update}->{lastupdated};
-		if ($period eq 'guess' && $diff <= 21600) { # 6 hours in seconds
+		if ($period eq 'guess' && $diff <= $self->{conf}->{minUpdateTime}) {
 			# We've updated recently (within 6 hours)
 			return;
 		} elsif ($diff <= 86400) {	# 1 day in seconds
@@ -320,7 +354,12 @@ sub getUpdates {
 		next unless defined $series->{$sid};
 		# Only update if there is a more recent version
 		if ($data->{time} > $series->{$sid}->{lastupdated}) {
-			$self->getSeries($sid, 1);
+			if ($period eq 'all') {
+				# all updates don't include Episodes, so the complete series record is downloaded
+				$self->getSeriesAll($sid, 1);
+			} else {
+				$self->getSeries($sid, 1);
+			}
 		}
 	}
 
@@ -332,7 +371,8 @@ sub getUpdates {
 		# Get it if we don't already have it
 		unless (defined $episodes->{$eid}
 			# Or, update if there is a more recent version
-			and $ep->{time} > $episodes->{$eid}->{lastupdated}) {
+			and $ep->{time} > $episodes->{$eid}->{lastupdated}
+		) {
 			$self->getEpisodeId($eid, 1);
 		}
 	}
@@ -346,10 +386,9 @@ sub getUpdates {
 			next unless defined $series->{$banner->{Series}};
 			# Don't update if we haven't already downloaded this banner
 			my $filename = "$self->{bannerPath}/$banner->{path}";
-			next unless -f "$filename";
+			next unless -f $filename;
 			# Don't update if it isn't newer
-			my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime) = stat($filename);
-			next unless $banner->{time} > $mtime;
+			next unless -z $filename || $banner->{time} > &_mtime($filename);
 			$self->getBanner($banner->{path}, undef, 1);
 		}
 	}
@@ -357,6 +396,19 @@ sub getUpdates {
 	# Save when we last updated, now that we've successfully done so
 	$self->{cache}->{Update}->{lastupdated} = $now;
 	$self->{cache}->{Update}->{lasttime} = $updates->{time};
+}
+
+###############################################################################
+# Fill in the blank
+sub getPossibleSeriesId {
+	my ($self, $name) = @_;
+
+	&verbose(2, "TVDB::API: Get possbile series id for $name\n");
+	my $xml = $self->_download($Url{getSeriesID}, $Url{defaultURL}, $name);
+	return undef unless $xml;
+	my $data = XMLin($xml, ForceArray=>['Series']);
+
+	return $data->{Series};
 }
 
 ###############################################################################
@@ -370,26 +422,25 @@ sub getSeriesId {
 	# See if it's in the series cache
 	my $cache = $self->{cache};
 	if (!$nocache && defined $cache->{Name2Sid}->{$name}) {
-		#print "From SID Cache: $name -> $cache->{$name}\n";
+		#print "From SID Cache: $name -> $cache->{Name2Sid}->{$name}\n";
+		return undef unless $cache->{Name2Sid}->{$name};
 		return $cache->{Name2Sid}->{$name};
 	}
 
-	# Else, go look it up
-	&verbose(2, "TVDB::API: Get series id for $name\n");
-	my $xml = $self->_download($Url{getSeriesID}, $Url{defaultURL}, $name);
-	return undef unless $xml;
-	my $data = XMLin($xml, ForceArray=>['Series']);
+	my $data = $self->getPossibleSeriesId($name);
 
 	# Look through list of possibilities
-	while (my ($sid,$series) = each %{$data->{Series}}) {
-		if ($series->{SeriesName} =~ /^(The )?\Q$name\E(, The)?$/i) {
-			$cache->{Name2Sid}->{$name} = $sid;
-			return $sid;
+	if ($data) {
+		while (my ($sid,$series) = each %$data) {
+			if ($series->{SeriesName} =~ /^(The )?\Q$name\E(, The)?$/i) {
+				$cache->{Name2Sid}->{$name} = $sid;
+				return $sid;
+			}
 		}
 	}
 
 	# Nothing found, assign 0 to name so we cache this result
-	&warning("No series id found for: $name\n");
+	&warning("TBDB::API: No series id found for: $name\n");
 	$cache->{Name2Sid}->{$name} = 0; # Not undef as that messes up DBM::Deep
 	return undef;
 }
@@ -400,7 +451,7 @@ sub getSeries {
 	my ($self, $name, $nocache) = @_;
 	&debug(2, "getSeries: $name, $nocache\n");
 
-	my $sid = $self->getSeriesId($name, $nocache);
+	my $sid = $self->getSeriesId($name, $nocache?$nocache-1:0);
 	return undef unless $sid;
 
 	my $series = $self->{cache}->{Series};
@@ -436,7 +487,7 @@ sub getSeriesAll {
 	my ($self, $name, $nocache) = @_;
 	&debug(2, "getSeriesAll: $name, $nocache\n");
 
-	my $sid = $self->getSeriesId($name, $nocache);
+	my $sid = $self->getSeriesId($name, $nocache?$nocache-1:0);
 	return undef unless $sid;
 
 	# Get series data
@@ -495,9 +546,9 @@ sub getSeriesName {
 sub getSeriesActors {
 	my ($self, $name, $nocache) = @_;
 
-	my $sid = $self->getSeriesId($name, $nocache);
+	my $sid = $self->getSeriesId($name, $nocache?$nocache-2:0);
 	return undef unless $sid;
-	my $series = $self->getSeries($sid, $nocache);
+	my $series = $self->getSeries($sid, $nocache?$nocache-1:0);
 	return undef unless $series;
 
 	# Get actors data
@@ -522,9 +573,9 @@ sub getSeriesActors {
 sub getSeriesBanners {
 	my ($self, $name, $type, $type2, $value, $nocache) = @_;
 
-	my $sid = $self->getSeriesId($name, $nocache);
+	my $sid = $self->getSeriesId($name, $nocache?$nocache-2:0);
 	return undef unless $sid;
-	my $series = $self->getSeries($sid, $nocache);
+	my $series = $self->getSeries($sid, $nocache?$nocache-1:0);
 	return undef unless $series;
 
 	# Get banner data
@@ -564,7 +615,7 @@ sub getSeriesInfo {
 
 	# Check that info is available
 	unless (defined $data->{$info}) {
-		&warning("No $info found for series $name\n");
+		#&warning("TBDB::API: No $info found for series $name\n");
 		return undef;
 	}
 
@@ -574,17 +625,20 @@ sub getSeriesInfo {
 ###############################################################################
 sub getSeriesBanner {
 	my ($self, $name, $buffer, $nocache) = @_;
-	my $banner = $self->getSeriesInfo($name, 'banner', $nocache);
+	my $banner = $self->getSeriesInfo($name, 'banner', $nocache?$nocache-1:0);
+	return undef unless $banner;
 	return $self->getBanner($banner, $buffer, $nocache);
 }
 sub getSeriesFanart {
 	my ($self, $name, $buffer, $nocache) = @_;
-	my $banner = $self->getSeriesInfo($name, 'fanart', $nocache);
+	my $banner = $self->getSeriesInfo($name, 'fanart', $nocache?$nocache-1:0);
+	return undef unless $banner;
 	return $self->getBanner($banner, $buffer, $nocache);
 }
 sub getSeriesPoster {
 	my ($self, $name, $buffer, $nocache) = @_;
-	my $banner = $self->getSeriesInfo($name, 'poster', $nocache);
+	my $banner = $self->getSeriesInfo($name, 'poster', $nocache?$nocache-1:0);
+	return undef unless $banner;
 	return $self->getBanner($banner, $buffer, $nocache);
 }
 sub getSeriesOverview {
@@ -618,19 +672,26 @@ sub getBanner {
 	return unless defined $self->{bannerPath};
 
 	my $filename = "$self->{bannerPath}/$banner";
-	if ($nocache || ! -f $filename) {
-        my $buf;
-	    my $gfx = $buffer ? $buffer : \$buf;
 
-		# Download banner
+	# See if we tried to get this during the last week and failed
+	if (-z $filename && (time - &_mtime($filename) < $self->{conf}->{minBannerTime})) {
+		&verbose(2, "TVDB::API: download of $banner failed before\n");
+		return undef;
+	}
+
+	if ($nocache || ! -s $filename) {
+		my $buf;
+		my $gfx = $buffer ? $buffer : \$buf;
+
+		# Download banner (create zero length file if nothing downloaded)
 		&verbose(1, "TVDB::API: Get banner $banner\n");
 		$$gfx = $self->_download($self->{bannerURL}.$banner);
-		return undef unless $$gfx;
 		&_makedir($1) if $filename =~ m|^(.*)/[^/]+$|;
 		open(GFX, "> $filename") || die "$filename:$!";
 		print GFX $$gfx;
+		return undef unless $$gfx;
 
-    } elsif ($buffer) {
+	} elsif ($buffer && -s $filename) {
 		# get Banner from cache
 		&debug(2, "From Banner Cache: $banner\n");
 		open(GFX, "< $filename") || die "$filename:$!";
@@ -645,10 +706,8 @@ sub getBanner {
 ###############################################################################
 sub getMaxSeason {
 	my ($self, $name, $nocache) = @_;
-	my $sid = $self->getSeriesId($name, $nocache);
-	return undef unless $sid;
 	$self->getUpdates(); # Update available episodes/seasons
-	my $series = $self->getSeriesAll($sid, $nocache);
+	my $series = $self->getSeriesAll($name, $nocache?$nocache-1:0);
 	return undef unless $series;
 	return $#{$series->{Seasons}};
 }
@@ -656,16 +715,17 @@ sub getMaxSeason {
 ###############################################################################
 sub getSeason {
 	my ($self, $name, $season, $nocache) = @_;
-	my $sid = $self->getSeriesId($name, $nocache);
-	return undef unless $sid;
-	my $series = $self->getSeriesAll($sid, $nocache);
-	return undef unless $series;
-	unless ($series->{Seasons}
-			&& defined $series->{Seasons}->[$season]
-			&& $series->{Seasons}->[$season]) {
+	if ($season < 0 || $season > $self->{conf}->{maxSeason}) {
+		&warning("TBDB::API: Invalid season $season for $name\n");
+		return undef;
+	}
+	my $series = $self->getSeriesAll($name, $nocache?$nocache-1:0);
+	return undef unless $series && $series->{Seasons};
+	unless ($series->{Seasons}->[$season]) {
 		$self->getUpdates();
-		unless (defined $series->{Seasons}->[$season]) {
-			&warning("No season $season found for $name\n");
+		unless ($series->{Seasons}->[$season]) {
+			&warning("TBDB::API: No season $season found for $name\n");
+			#$series->{Seasons}->[$season] = 0;
 			return undef;
 		}
 	}
@@ -680,12 +740,13 @@ sub getSeasonBanners {
 	while (my ($id,$banner) = each %$data) {
 		push @banners, $banner->{BannerPath};
 	}
-	return @banners;
+	return sort @banners;
 }
 sub getSeasonBanner {
 	my ($self, $name, $season, $buffer, $nocache) = @_;
-	my @banners = $self->getSeasonBanners($name, $season, $nocache);
-	return $self->getBanner(_rand(@banners), $buffer, $nocache);
+	my @banners = $self->getSeasonBanners($name, $season, $nocache?$nocache-1:0);
+	return undef unless @banners;
+	return $self->getBanner($banners[0], $buffer, $nocache);
 }
 
 ###############################################################################
@@ -696,12 +757,13 @@ sub getSeasonBannersWide {
 	while (my ($id,$banner) = each %$data) {
 		push @banners, $banner->{BannerPath};
 	}
-	return @banners;
+	return sort @banners;
 }
 sub getSeasonBannerWide {
 	my ($self, $name, $season, $buffer, $nocache) = @_;
-	my @banners = $self->getSeasonBannersWide($name, $season, $nocache);
-	return $self->getBanner(_rand(@banners), $buffer, $nocache);
+	my @banners = $self->getSeasonBannersWide($name, $season, $nocache?$nocache-1:0);
+	return undef unless @banners;
+	return $self->getBanner($banners[0], $buffer, $nocache);
 }
 
 ###############################################################################
@@ -716,30 +778,42 @@ sub getMaxEpisode {
 ###############################################################################
 sub getEpisode {
 	my ($self, $name, $season, $episode, $nocache) = @_;
-	my $data = $self->getSeason($name, $season, $nocache);
+	if ($episode < 0 || $episode > $self->{conf}->{maxEpisode}) {
+		&warning("TBDB::API: Invalid episode $episode in season $season for $name\n");
+		return undef;
+	}
+	my $data = $self->getSeason($name, $season, $nocache?$nocache-1:0);
 	return undef unless $data;
 
 	# See if we have to update the episode record
 	my $cache = $self->{cache};
 	my $series = $cache->{Series};
 	my $eid = $data->[$episode] if defined $data->[$episode];
-	unless (!$nocache && $eid && defined $cache->{Episode}->{$eid}) {
+	if (ref($eid) ne '' && (time - $eid->{lasttried}) < $self->{conf}->{minEpisodeTime}) {
+		&verbose(2, "TBDB::API: No episode $episode found for season $season of $name (cached)\n");
+		return undef;
+	}
+	unless (!$nocache && $eid && ref($eid) eq '' && $cache->{Episode}->{$eid}) {
 		# Download episode
 		my $sid = $self->getSeriesId($name);
 		&verbose(1, "TVDB::API: Updating episode $episode from season $season for $name\n");
 		my $new = $self->_downloadXml($Url{getEpisode}, $sid, $season, $episode, $self->{lang});
-		return undef unless $new;
 
-		# Save episode in cache
-		($eid, my $ep) = each %{$new->{Episode}};
-		$series->{$sid}->{Seasons} = [] unless $series->{$sid}->{Seasons};
-		$series->{$sid}->{Seasons}->[$season]->[$episode] = $eid;
-		$cache->{Episode}->{$eid} = $ep;
+		if ($new) {
+			# Save episode in cache
+			($eid, my $ep) = each %{$new->{Episode}};
+			$series->{$sid}->{Seasons} = [] unless $series->{$sid}->{Seasons};
+			$series->{$sid}->{Seasons}->[$season]->[$episode] = $eid;
+			$cache->{Episode}->{$eid} = $ep;
+		} else {
+			$eid = 0;
+			$series->{$sid}->{Seasons}->[$season]->[$episode]->{lasttried} = time;
+		}
 	}
 
 	# Check again (if it's been updated)
 	unless ($eid && defined $cache->{Episode}->{$eid}) {
-		&warning("No episode $episode found for season $season of $name\n");
+		&warning("TBDB::API: No episode $episode found for season $season of $name\n");
 		return undef;
 	}
 
@@ -766,7 +840,7 @@ sub getEpisodeId {
 ###############################################################################
 sub getEpisodeByAirDate {
 	my ($self, $name, $airdate, $nocache) = @_;
-	my $sid = $self->getSeriesId($name, $nocache);
+	my $sid = $self->getSeriesId($name, $nocache?$nocache-1:0);
 
 	my $cache = $self->{cache};
 
@@ -787,7 +861,7 @@ sub getEpisodeInfo {
 
 	# Check that info is available
 	unless (defined $data->{$info}) {
-		&warning("No $info found for episode $episode of season $season of $name\n");
+		#&warning("TBDB::API: No $info found for episode $episode of season $season of $name\n");
 		return undef;
 	}
 
@@ -797,7 +871,8 @@ sub getEpisodeInfo {
 ###############################################################################
 sub getEpisodeBanner {
 	my ($self, $name, $season, $episode, $buffer, $nocache) = @_;
-	my $banner = $self->getEpisodeInfo($name, $season, $episode, 'filename', $nocache);
+	my $banner = $self->getEpisodeInfo($name, $season, $episode, 'filename', $nocache?$nocache-1:0);
+	return undef unless $banner;
 	return $self->getBanner($banner, $buffer, $nocache);
 }
 sub getEpisodeName {
@@ -814,16 +889,16 @@ sub getRatingsForUser {
 	my ($self, $user, $name, $nocache) = @_;
 
 	# Download ratings
-    my $data;
-    if ($name) {
-	    my $sid = $self->getSeriesId($name, $nocache);
-	    &verbose(1, "TVDB::API: Get rating for $user for $name ($sid)\n");
-	    $data = $self->_downloadApikeyXml($Url{getRatingsForUser}, $user, $sid);
-    } else {
-	    &verbose(1, "TVDB::API: Get rating for $user\n");
-	    $data = $self->_downloadApikeyXml($Url{getRatingsForUserAll}, $user);
-    }
-    return undef unless $data;
+	my $data;
+	if ($name) {
+		my $sid = $self->getSeriesId($name, $nocache?$nocache-1:0);
+		&verbose(1, "TVDB::API: Get rating for $user for $name ($sid)\n");
+		$data = $self->_downloadApikeyXml($Url{getRatingsForUser}, $user, $sid);
+	} else {
+		&verbose(1, "TVDB::API: Get rating for $user\n");
+		$data = $self->_downloadApikeyXml($Url{getRatingsForUserAll}, $user);
+	}
+	return undef unless $data;
 
 	return $data;
 }
@@ -838,7 +913,7 @@ TVDB::API - API to www.thetvdb.com
 =head1 SYNOPSIS
 
   use TVDB::API;
-	
+
   my $tvdb = TVDB::API::new([[$apikey], $language]);
 
   $tvdb->setApiKey($apikey);
@@ -847,6 +922,11 @@ TVDB::API - API to www.thetvdb.com
   $tvdb->setBannerPath("/foo/bar/banners");
   $tvdb->setCacheDB("$ENV{HOME}/.tvdb.db");
 
+  my $hashref = $tvdb->getConf();
+  my $value = $tvdb->getConf($key);
+  $tvdb->setConf($key, $value);
+  $tvdb->setConf({key1=>'value1', key2=>'value2'});
+
   my $hashref = $tvdb->getAvailableMirrors([$nocache]);
   $tvdb->setMirrors($mirror, [$banner, [$zip]]);
   $tvdb->chooseMirrors([$nocache]);
@@ -854,13 +934,14 @@ TVDB::API - API to www.thetvdb.com
 
   $tvdb->getUpdates([$period]);
 
+  my $series_id = $tvdb->getPossibleSeriesId($series_name, [$nocache]);
   my $series_id = $tvdb->getSeriesId($series_name, [$nocache]);
   my $name = $tvdb->getSeriesName($series_id, [$nocache]);
   my $hashref = $tvdb->getSeries($series_name, [$nocache]);
   my $hashref = $tvdb->getSeriesAll($series_name, [$nocache]);
   my $hashref = $tvdb->getSeriesActors($series_name, [$nocache]);
   my $hashref = $tvdb->getSeriesBanners($series_name, $type, $type2, $value, [$nocache]);
-  my $hashref = $tvdb->getSeriesInfo($series_name, [$nocache]);
+  my $hashref = $tvdb->getSeriesInfo($series_name, key, [$nocache]);
   my $string = $tvdb->getSeriesBanner($series_name, [$buffer, [$nocache]]);
   my $string = $tvdb->getSeriesFanart($series_name, [$buffer, [$nocache]]);
   my $string = $tvdb->getSeriesPoster($series_name, [$buffer, [$nocache]]);
@@ -880,7 +961,7 @@ TVDB::API - API to www.thetvdb.com
   my $hashref = $tvdb->getEpisodeId($episodeid, [$nocache]);
   my $hashref = $tvdb->getEpisodeByAirDate($series, $airdate, [$nocache]);
   my $string = $tvdb->getEpisodeInfo($series, $season, $episode, $info, [$nocache]);
-  my $string = $tvdb->getEpisodeBanner($series, $season, $episode, [$nocache]);
+  my $string = $tvdb->getEpisodeBanner($series, $season, $episode, [$buffer, [$nocache]]);
   my $string = $tvdb->getEpisodeName($series, $season, $episode, [$nocache]);
   my $string = $tvdb->getEpisodeOverview($series, $season, $episode, [$nocache]);
 
@@ -898,6 +979,15 @@ This module provides an API to the TVDB database through the new published API.
 
 Create a TVDB::API object using C<APIKEY> and using a default language
 of C<LANGUAGE>. Both these arguments are optional.
+
+New can also be called with a hashref as the first argument.
+
+  $tvdb = TVDB::API::new({ apikey    => $apikey,
+                           lang      => 'en',
+                           cache     => 'filename',
+                           banner    => 'banner/path',
+                           useragent => 'My useragent'
+                        });
 
 =item setApiKey(APIKEY);
 
@@ -943,6 +1033,22 @@ Choose a random mirror from the list of available mirrors.  If C<NOCACHE> is
 non-zero, then the mirrors are downloaded again even if they are in the cache
 database already.
 
+=item getConf([KEY])
+
+Get configurable values by C<KEY>.  If no C<KEY> is specified, a hashref of all
+values is returned.
+
+=item setConf(KEY, VALUE) or setConf({KEY=>VALUE, ...})
+
+Set configurable values by C<KEY>/C<VALUE> pair.  If a hashref is passed in,
+all C<KEY>/C<VALUE> pairs in the hashref will be configured.
+
+    maxSeason       => 50,          # Maximum allowed season
+    maxEpisode      => 50,          # Maximum allowed episode
+    minUpdateTime   => 3600*6,      # Used by getUpdate('now')
+    minBannerTime   => 3600*24*7,   # Used by getBanner()
+    minEpisodeTime  => 3600*24*7,   # Used by getEpisode()
+
 =item getAvailableLanguages([NOCACHE])
 
 Get a list of available languages, and return them in a hashref.  If C<NOCACHE>
@@ -980,13 +1086,17 @@ or all update.
 
 =item C<guess>
 
-Like C<now>, based on the last update performed, determine whether to do a day,
+Like C<now>, based on the last update performed; determine whether to do a day,
 week, month or all update.  However, if the last update was performed in the
-last 6 hours, do nothing. This is the default C<PERIOD>
+last 6 hours (setable as C<minUpdateTime> with setConf()), do nothing. This is
+the default C<PERIOD>.
 
 =back
 
-If C<NOWAIT> is non-zero, then get updates despite having checked recently.
+=item getPossibleSeriesId(SERIESNAME)
+
+Get a list of possible series ids for C<SERIESNAME> from thetvtb.com. This
+will return a hashref of possibilities.
 
 =item getSeriesId(SERIESNAME, [NOCACHE])
 
@@ -1082,6 +1192,9 @@ downloaded again even if it is in the C<BannerPath> directory already. It will
 return the path of the picture relative to the C<BannerPath> directory.  In
 this case it will just be the same as C<BANNER>.
 
+The C<minBannerTime> configuration variable determines the maximum time a
+banner download failure will be cached.  (see getConf()/setConf()).
+
 =item getMaxSeason(SERIESNAME, [NOCACHE])
 
 Return the number of the last season for C<SERIESNAME>.  If C<NOCACHE> is
@@ -1093,6 +1206,9 @@ even if it is in the cache database already.
 Return a hashref of episodes in C<SEASON> for C<SERIESNAME>.  If C<NOCACHE> is
 non-zero, then any episodes needed for this season is downloaded again even if
 it is in the cache database already.
+
+The C<maxSeason> configuration variable determines the maximum allowable season
+(see getConf()/setConf()).
 
 =item getSeasonBanners(SERIESNAME, SEASON, [NOCACHE])
 
@@ -1132,11 +1248,17 @@ Return the number episodes in C<SEASON> for C<SERIESNAME>.  If C<NOCACHE> is
 non-zero, then any series info needed to calculate this is downloaded again
 even if it is in the cache database already.
 
+The C<maxEpisode> configuration variable determines the maximum allowable
+episode (see getConf()/setConf()).
+
 =item getEpisode(SERIESNAME, SEASON, EPISODE, [NOCACHE])
 
 Return a hashref for the C<EPISODE> in C<SEASON> for C<SERIESNAME>.  If
 C<NOCACHE> is non-zero, then the episode is downloaded again even if it is in
 the cache database already.
+
+The C<minEpisodeTime> configuration variable determines the maximum time a
+episode lookup failure will be cached.  (see getConf()/setConf()).
 
 =item getEpisodeId(EPISODEID, [NOCACHE])
 
@@ -1199,30 +1321,34 @@ Dump the cache database with Dumper to stdout.
 
 =head1 EXAMPLE
 
-    my $episode = $tvdb->getEpisode('Lost', 3, 5); print Dumper($episode);
+    use Data::Dumper;
+    use TVDB::API;
+    my $episode = $tvdb->getEpisode('Lost', 3, 5);
+    print Dumper($episode);
+
+    Produces:
 
     $episode = {
-	'lastupdated' => '1219734325',
-	'EpisodeName' => 'The Cost of Living',
-	'seasonid' => '16270',
-	'Overview' => 'A delirious Eko wrestles with past demons; some of the castaways go to the Pearl station to find a computerthey can use to locate Jack, Kate and Sawyer; Jack does not know who to trust when two of the Others are at odds with each other.
-	',
-	'filename' => 'episodes/73739-308051.jpg',
-	'EpisodeNumber' => '5',
-	'Language' => 'en',
-	'Combined_season' => '3',
-	'FirstAired' => '2006-11-01',
-	'seriesid' => '73739',
-	'Director' => 'Jack Bender',
-	'SeasonNumber' => '3',
-	'Writer' => 'Monica Owusu-Breen, Alison Schapker',
-	'GuestStars' => '|Olalekan Obileye| Kolawole Obileye Junior| Alicia Young| Aisha Hinds| Lawrence Jones| Ariston Green| Michael Robinson| Jermaine|',
-	'Combined_episodenumber' => '5'
+      'lastupdated' => '1219734325',
+      'EpisodeName' => 'The Cost of Living',
+      'seasonid' => '16270',
+      'Overview' => 'A delirious Eko wrestles with past demons; some of the castaways go to the Pearl station to find a computerthey can use to locate Jack, Kate and Sawyer; Jack does not know who to trust when two of the Others are at odds with each other.',
+      'filename' => 'episodes/73739-308051.jpg',
+      'EpisodeNumber' => '5',
+      'Language' => 'en',
+      'Combined_season' => '3',
+      'FirstAired' => '2006-11-01',
+      'seriesid' => '73739',
+      'Director' => 'Jack Bender',
+      'SeasonNumber' => '3',
+      'Writer' => 'Monica Owusu-Breen, Alison Schapker',
+      'GuestStars' => '|Olalekan Obileye| Kolawole Obileye Junior| Alicia Young| Aisha Hinds| Lawrence Jones| Ariston Green| Michael Robinson| Jermaine|',
+      'Combined_episodenumber' => '5'
     };
 
 =head1 AUTHOR
 
-S<Behan Webster E<lt>behanw@websterwood.com<gt>>
+S<Behan Webster E<lt>behanw@websterwood.comE<gt>>
 
 =head1 COPYRIGHT
 
