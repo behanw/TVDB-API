@@ -1,0 +1,13 @@
+Source: libtvdb-api-perl
+Section: perl
+Priority: optional
+Build-Depends: debhelper (>= 5), perl (>= 5.6.10-12)
+Maintainer: Behan Webster <behanw@websterwood.com>
+Standards-Version: 3.8.0
+Homepage: http://search.cpan.org/dist/TVDB-API/
+
+Package: libtvdb-api-perl
+Architecture: all
+Depends: ${perl:Depends}, ${misc:Depends}, perl-modules, libcompress-zlib-perl, libdbm-deep-perl, libdata-dumper-simple-perl, libdebug-simple-perl, libio-compress-zlib-perl, libwww-perl, libxml-simple-perl
+Description:  API to www.thetvdb.com
+ This module provides an API to the TVDB database through the new published API.
