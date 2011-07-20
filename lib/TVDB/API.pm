@@ -19,7 +19,7 @@ use XML::Simple;
 
 use vars qw($VERSION %Defaults %Url);
 
-$VERSION = "0.35";
+$VERSION = "0.36";
 
 # TheTVDB Urls
 %Url = (
@@ -257,8 +257,11 @@ sub _downloadZip {
 	my $url = sprintf($fmt, $self->{zipURL}, @parm, 'zip');
 	my $obj = new IO::Uncompress::Unzip \$zip, MultiStream => 1, Transparent => 1
 		or die "IO::Uncompress::Unzip failed: $url\n";
-	local $/ = undef;
-	my $xml = <$obj>;
+	my $xml;
+	{
+		local $/ = undef;
+		$xml = <$obj>;
+	}
 
 	# Make en.xml/banners.xml/actors.xml into one xml file
 	if ($xml =~ s/<\/Data><\?xml.*?Banners>|<\/Banners><\?xml.*?Actors>//gs) {
@@ -415,7 +418,11 @@ sub getBannerUpdate {
 
 	# Don't update if it isn't newer
 	return unless -z $filename || $time > &_mtime($filename);
-	$self->getBanner($banner->{path}, undef, 1);
+	if (ref($banner) eq 'HASHREF') {
+		$self->getBanner($banner->{path}, undef, 1);
+	} else {
+		$self->getBanner($banner, undef, 1);
+	}
 }
 
 ###############################################################################
