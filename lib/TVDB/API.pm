@@ -18,7 +18,7 @@ use XML::Simple;
 
 use vars qw($VERSION %Url);
 
-$VERSION = "0.10";
+$VERSION = "0.20";
 
 # TheTVDB Urls
 %Url = (
@@ -330,7 +330,7 @@ sub getUpdates {
 			# Don't update if it isn't newer
 			my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime) = stat($filename);
 			next unless $banner->{time} > $mtime;
-			$self->getBanner($banner->{path}, 1);
+			$self->getBanner($banner->{path}, undef, 1);
 		}
 	}
 
@@ -553,19 +553,19 @@ sub getSeriesInfo {
 
 ###############################################################################
 sub getSeriesBanner {
-	my ($self, $name, $nocache) = @_;
+	my ($self, $name, $buffer, $nocache) = @_;
 	my $banner = $self->getSeriesInfo($name, 'banner', $nocache);
-	return $self->getBanner($banner);
+	return $self->getBanner($banner, $buffer, $nocache);
 }
 sub getSeriesFanart {
-	my ($self, $name, $nocache) = @_;
+	my ($self, $name, $buffer, $nocache) = @_;
 	my $banner = $self->getSeriesInfo($name, 'fanart', $nocache);
-	return $self->getBanner($banner);
+	return $self->getBanner($banner, $buffer, $nocache);
 }
 sub getSeriesPoster {
-	my ($self, $name, $nocache) = @_;
+	my ($self, $name, $buffer, $nocache) = @_;
 	my $banner = $self->getSeriesInfo($name, 'poster', $nocache);
-	return $self->getBanner($banner);
+	return $self->getBanner($banner, $buffer, $nocache);
 }
 sub getSeriesOverview {
 	my ($self, $name, $nocache) = @_;
@@ -591,32 +591,35 @@ sub _makedir {
 }
 
 ###############################################################################
-# get banner from cache (or download it) and return a reference to buffer
+# get named banner. Download if not already. Read from cache if buffer provided.
 sub getBanner {
-	my ($self, $banner, $nocache) = @_;
+	my ($self, $banner, $buffer, $nocache) = @_;
 
 	return unless defined $self->{bannerPath};
 
 	my $filename = "$self->{bannerPath}/$banner";
-	my $gfx;
-	if (!$nocache && -f $filename) {
+	if ($nocache || ! -f $filename) {
+        my $buf;
+	    my $gfx = $buffer ? $buffer : \$buf;
+
+		# Download banner
+		&verbose(1, "TVDB::API: Get banner $banner\n");
+		$$gfx = $self->_download($self->{bannerURL}.$banner);
+		return undef unless $$gfx;
+		&_makedir($1) if $filename =~ m|^(.*)/[^/]+$|;
+		open(GFX, "> $filename") || die "$filename:$!";
+		print GFX $$gfx;
+
+    } elsif ($buffer) {
 		# get Banner from cache
 		&debug(2, "From Banner Cache: $banner\n");
 		open(GFX, "< $filename") || die "$filename:$!";
 		local $/ = undef;
-		my $gfx = <GFX>;
-	} else {
-		# Download banner
-		&verbose(1, "TVDB::API: Get banner $banner\n");
-		$gfx = $self->_download($self->{bannerURL}.$banner);
-		return undef unless $gfx;
-		&_makedir($1) if $filename =~ m|^(.*)/[^/]+$|;
-		open(GFX, "> $filename") || die "$filename:$!";
-		print GFX $gfx;
+		$$buffer = <GFX>;
 	}
 	close GFX;
 
-	return \$gfx;
+	return $banner;
 }
 
 ###############################################################################
@@ -660,9 +663,9 @@ sub getSeasonBanners {
 	return @banners;
 }
 sub getSeasonBanner {
-	my ($self, $name, $season, $nocache) = @_;
+	my ($self, $name, $season, $buffer, $nocache) = @_;
 	my @banners = $self->getSeasonBanners($name, $season, $nocache);
-	return $self->getBanner(_rand(@banners));
+	return $self->getBanner(_rand(@banners), $buffer, $nocache);
 }
 
 ###############################################################################
@@ -676,9 +679,9 @@ sub getSeasonBannersWide {
 	return @banners;
 }
 sub getSeasonBannerWide {
-	my ($self, $name, $season, $nocache) = @_;
+	my ($self, $name, $season, $buffer, $nocache) = @_;
 	my @banners = $self->getSeasonBannersWide($name, $season, $nocache);
-	return $self->getBanner(_rand(@banners));
+	return $self->getBanner(_rand(@banners), $buffer, $nocache);
 }
 
 ###############################################################################
@@ -758,9 +761,9 @@ sub getEpisodeInfo {
 
 ###############################################################################
 sub getEpisodeBanner {
-	my ($self, $name, $season, $episode, $nocache) = @_;
+	my ($self, $name, $season, $episode, $buffer, $nocache) = @_;
 	my $banner = $self->getEpisodeInfo($name, $season, $episode, 'filename', $nocache);
-	return $self->getBanner($banner);
+	return $self->getBanner($banner, $buffer, $nocache);
 }
 sub getEpisodeName {
 	my ($self, $name, $season, $episode, $nocache) = @_;
@@ -804,25 +807,25 @@ TVDB::API - API to www.thetvdb.com
   my $hashref = $tvdb->getSeriesActors($series_name, [$nocache]);
   my $hashref = $tvdb->getSeriesBanners($series_name, $type, $type2, $value, [$nocache]);
   my $hashref = $tvdb->getSeriesInfo($series_name, [$nocache]);
-  my $banner = $tvdb->getSeriesBanner($series_name, [$nocache]);
-  my $fanart = $tvdb->getSeriesFanart($series_name, [$nocache]);
-  my $poster = $tvdb->getSeriesPoster($series_name, [$nocache]);
+  my $string = $tvdb->getSeriesBanner($series_name, [$buffer, [$nocache]]);
+  my $string = $tvdb->getSeriesFanart($series_name, [$buffer, [$nocache]]);
+  my $string = $tvdb->getSeriesPoster($series_name, [$buffer, [$nocache]]);
   my $string = $tvdb->getSeriesOverview($series_name, [$nocache]);
 
-  my $picture = $tvdb->getBanner($banner, [$nocache]);
+  my $path = $tvdb->getBanner($banner, [$buffer, [$nocache]]);
 
   my $int = $tvdb->getMaxSeason($series, [$nocache]);
   my $hashref = $tvdb->getSeason($series, $season, [$nocache]);
   my @picture_names = $tvdb->getSeasonBanners($series, $season, [$nocache]);
-  my $picture = $tvdb->getSeasonBanner($series, $season, [$nocache]);
+  my $string = $tvdb->getSeasonBanner($series, $season, [$buffer, [$nocache]]);
   my @picture_names = $tvdb->getSeasonBannersWide($series, $season, [$nocache]);
-  my $picture = $tvdb->getSeasonBannerWide($series, $season, [$nocache]);
+  my $string = $tvdb->getSeasonBannerWide($series, $season, [$buffer, [$nocache]]);
 
   my $int = $tvdb->getMaxEpisode($series, $season, [$nocache]);
   my $hashref = $tvdb->getEpisode($series, $season, $episode, [$nocache]);
   my $hashref = $tvdb->getEpisodeId($episodeid, [$nocache]);
   my $string = $tvdb->getEpisodeInfo($series, $season, $episode, $info, [$nocache]);
-  my $picture = $tvdb->getEpisodeBanner($series, $season, $episode, [$nocache]);
+  my $string = $tvdb->getEpisodeBanner($series, $season, $episode, [$nocache]);
   my $string = $tvdb->getEpisodeName($series, $season, $episode, [$nocache]);
   my $string = $tvdb->getEpisodeOverview($series, $season, $episode, [$nocache]);
 
@@ -978,23 +981,33 @@ or "seasonwide" and C<VALUE> specifies the season number.  If C<TYPE> is
 Return a string for C<KEY> in the hashref for C<SERIESNAME>.  If C<NOCACHE> is
 non-zero, then the series is downloaded again even if it is in the cache database already.
 
-=item getSeriesBanner(SERIESNAME, [NOCACHE]);
+=item getSeriesBanner(SERIESNAME, [BUFFER, [NOCACHE]]);
 
-Get the series banner from thetvdb.com and return it as a binary blob. If
-C<NOCACHE> is non-zero, then the banner is downloaded again even if it is in
-the C<BannerPath> directory already.
+Get the C<SERIESNAME> banner from thetvdb.com and save it in the C<BannerPath>
+directory.  The cached banner is updated via C<getUpdates> when appropriate. If
+a C<BUFFER> is provided (a scalar reference), the banner (newly downloaded, or
+from the cache) is loaded into it. If C<NOCACHE> is non-zero, then the banner
+is downloaded again even if it is in the C<BannerPath> directory already. It
+will return the path of the banner relative to the C<BannerPath> directory.
 
-=item getSeriesFanart(SERIESNAME, [NOCACHE]);
+=item getSeriesFanart(SERIESNAME, [BUFFER, [NOCACHE]]);
 
-Get the series fan art from thetvdb.com and return it as a binary blob. If
-C<NOCACHE> is non-zero, then the fan art is downloaded again even if it is in
-the C<BannerPath> directory already.
+Get the C<SERIESNAME> fan art from thetvdb.com and save it in the C<BannerPath>
+directory.  The cached fan art is updated via C<getUpdates> when appropriate.
+If a C<BUFFER> is provided (a scalar reference), the fan art (newly downloaded,
+or from the cache) is loaded into it. If C<NOCACHE> is non-zero, then the fan
+art is downloaded again even if it is in the C<BannerPath> directory already.
+It will return the path of the fan art relative to the C<BannerPath> directory.
 
-=item getSeriesPoster(SERIESNAME, [NOCACHE]);
+=item getSeriesPoster(SERIESNAME, [BUFFER, [NOCACHE]]);
 
-Get the series poster from thetvdb.com and return it as a binary blob. If
-C<NOCACHE> is non-zero, then the poster is downloaded again even if it is in
-the C<BannerPath> directory already.
+Get the C<SERIESNAME> poster from thetvdb.com and save it in the C<BannerPath>
+directory.  The cached poster is updated via C<getUpdates> when appropriate.
+If a C<BUFFER> is provided (a scalar reference), the poster (newly downloaded,
+or from the cache) is loaded into it. If C<NOCACHE> is non-zero, then the
+poster is downloaded again even if it is in the C<BannerPath> directory
+already. It will return the path of the poster relative to the C<BannerPath>
+directory.
 
 =item getSeriesOverview(SERIESNAME, [NOCACHE]);
 
@@ -1002,13 +1015,15 @@ Get the series overview from thetvdb.com and return it as a string. If
 C<NOCACHE> is non-zero, then the banner is downloaded again even if it is in
 the cache database already.
 
-=item getBanner(BANNER, [NOCACHE]);
+=item getBanner(BANNER, [BUFFER, [NOCACHE]]);
 
-Get the C<BANNER> from thetvdb.com and return it as a binary blob.  If
-C<BannerPath> is set (via C<setBannerPath>), then the banner is saved/cached in
-that directory structure and updated via C<getUpdates> when appropriate.  If
-C<NOCACHE> is non-zero, then the banner is downloaded again even if it is in
-the C<BannerPath> directory already.
+Get the C<BANNER> from thetvdb.com and save it in the C<BannerPath> directory.
+The cached banner is updated via C<getUpdates> when appropriate. If a C<BUFFER>
+is provided (a scalar reference), the picture (newly downloaded, or from the
+cache) is loaded into it. If C<NOCACHE> is non-zero, then the banner is
+downloaded again even if it is in the C<BannerPath> directory already. It will
+return the path of the picture relative to the C<BannerPath> directory.  In
+this case it will just be the same as C<BANNER>.
 
 =item getMaxSeason(SERIESNAME, [NOCACHE]);
 
@@ -1029,11 +1044,14 @@ can get used with C<getBanner()> to actually download the banner file. If
 C<NOCACHE> is non-zero, then any data needed for this is downloaded again even
 if it is in the cache database already.
 
-=item getSeasonBanner(SERIESNAME, SEASON, [NOCACHE]);
+=item getSeasonBanner(SERIESNAME, SEASON, [BUFFER, [NOCACHE]]);
 
-Return a random banner (binary blob) for C<SEASON> for C<SERIESNAME>. If
-C<NOCACHE> is non-zero, then any episodes needed for this season is downloaded
-again even if it is in the C<BannerPath> directory already.
+Get a random banner for C<SEASON> for C<SERIESNAME>.  The cached banner is
+updated via C<getUpdates> when appropriate.  If a C<BUFFER> is provided (a
+scalar reference), the banner (newly downloaded, or from the cache) is loaded
+into it.  If C<NOCACHE> is non-zero, then the banner is downloaded again even
+if it is in the C<BannerPath> directory already. It will return the path of the
+banner relative to the C<BannerPath> directory.
 
 =item getSeasonBannersWide(SERIESNAME, SEASON, [NOCACHE]);
 
@@ -1042,11 +1060,14 @@ names can get used with C<getBanner()> to actually download the banner file. If
 C<NOCACHE> is non-zero, then any data needed for this is downloaded again even
 if it is in the C<BannerPath> directory already.
 
-=item getSeasonBannerWide(SERIESNAME, SEASON, [NOCACHE]);
+=item getSeasonBannerWide(SERIESNAME, SEASON, [BUFFER, [NOCACHE]]);
 
-Return a random wide banner (binary blob) for C<SEASON> for C<SERIESNAME>. If
-C<NOCACHE> is non-zero, then any episodes needed for this season is downloaded
-again even if it is in the C<BannerPath> directory already.
+Get a random banner for C<SEASON> for C<SERIESNAME>.  The cached banner is
+updated via C<getUpdates> when appropriate.  If a C<BUFFER> is provided (a
+scalar reference), the banner (newly downloaded, or from the cache) is loaded
+into it.  If C<NOCACHE> is non-zero, then the banner is downloaded again even
+if it is in the C<BannerPath> directory already. It will return the path of the
+banner relative to the C<BannerPath> directory.
 
 =item getMaxEpisode(SERIESNAME, SEASON, [NOCACHE]);
 
@@ -1072,11 +1093,14 @@ Return a string for C<KEY> in the hashref for C<EPISODE> in C<SEASON> for
 C<SERIESNAME>.  If C<NOCACHE> is non-zero, then the episode is downloaded again
 even if it is in the cache database already.
 
-=item getEpisodeBanner(SERIESNAME, SEASON, EPISODE, [NOCACHE]);
+=item getEpisodeBanner(SERIESNAME, SEASON, EPISODE, [BUFFER, [NOCACHE]]);
 
-Return the episode banner (binary blob) for C<EPISODE> in C<SEASON> for
-C<SERIESNAME>.  If C<NOCACHE> is non-zero, then the banner is downloaded again
-even if it is in the C<BannerPath> directory already.
+Get the episode banner for C<EPISODE> in C<SEASON> for C<SERIESNAME>.  The
+cached banner is updated via C<getUpdates> when appropriate.  If a C<BUFFER> is
+provided, the picture (newly downloaded, or from the cache) is loaded into it.
+If C<NOCACHE> is non-zero, then the banner is downloaded again even if it is in
+the C<BannerPath> directory already. It will return the path of the picture
+relative to the C<BannerPath> directory.
 
 =item getEpisodeName(SERIESNAME, SEASON, EPISODE, [NOCACHE]);
 

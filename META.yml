@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:                TVDB-API
-version:             0.10
+version:             0.20
 abstract:            API to www.thetvdb.com
 license:             ~
 author:              
