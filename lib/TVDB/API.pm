@@ -18,7 +18,7 @@ use XML::Simple;
 
 use vars qw($VERSION %Url);
 
-$VERSION = "0.21";
+$VERSION = "0.22";
 
 # TheTVDB Urls
 %Url = (
@@ -37,6 +37,10 @@ $VERSION = "0.21";
 	#getEpisodeAbs	=> '%s/series/%s/absolute/%s/%s.xml',		# apiURL, seriesid, absolute_episode, language
 	getEpisodeID	=> '%s/episodes/%s/%s.xml',			# apiURL, episodeid, language
 	getUpdates	=> '%s/updates/updates_%s.%s',			# apiURL, (day|week|month|all), (xml|zip)
+
+    getEpisodeByAirDate     => '%s/api/GetEpisodeByAirDate.php?apikey=%s&seriesid=%s&airdate=%s&language=%s',
+    getRatingsForUser       => '%s/api/GetRatingsForUser.php?apikey=%s&accountid=%s&seriesid=%s',
+    getRatingsForUserAll    => '%s/api/GetRatingsForUser.php?apikey=%s&accountid=%s',
 );
 
 ###############################################################################
@@ -174,6 +178,22 @@ sub _downloadXml {
 	# Download XML file
 	my $xml = $self->_download($fmt, $self->{apiURL}, @parm, 'xml');
 	return undef unless $xml;
+
+	# Remove empty tags
+	$xml =~ s/(<[^\/\s>]*\/>|<[^\/\s>]*><\/[^>]*>)//gs;
+
+	# Return process XML into hashref
+	return $self->{xml}->XMLin($xml);
+}
+# Download Xml, remove empty tags, parse XML, and return hashref
+sub _downloadApikeyXml {
+	my ($self, $fmt, @parm) = @_;
+
+	# Download XML file
+	my $xml = $self->_download($fmt, $self->{mirror}, $self->{apikey}, @parm);
+	return undef unless $xml;
+
+    $xml =~ s/seriesid>/id>/g;
 
 	# Remove empty tags
 	$xml =~ s/(<[^\/\s>]*\/>|<[^\/\s>]*><\/[^>]*>)//gs;
@@ -744,6 +764,21 @@ sub getEpisodeId {
 }
 
 ###############################################################################
+sub getEpisodeByAirDate {
+	my ($self, $name, $airdate, $nocache) = @_;
+	my $sid = $self->getSeriesId($name, $nocache);
+
+	my $cache = $self->{cache};
+
+	# Download episode
+	&verbose(1, "TVDB::API: Get episode for $name ($sid) on $airdate\n");
+	my $new = $self->_downloadApikeyXml($Url{getEpisodeByAirDate}, $sid, $airdate, $self->{lang});
+	return undef unless $new;
+
+	return $new->{Episode};
+}
+
+###############################################################################
 sub getEpisodeInfo {
 	my ($self, $name, $season, $episode, $info, $nocache) = @_;
 
@@ -772,6 +807,25 @@ sub getEpisodeName {
 sub getEpisodeOverview {
 	my ($self, $name, $season, $episode, $nocache) = @_;
 	return $self->getEpisodeInfo($name, $season, $episode, 'Overview', $nocache);
+}
+
+###############################################################################
+sub getRatingsForUser {
+	my ($self, $user, $name, $nocache) = @_;
+
+	# Download ratings
+    my $data;
+    if ($name) {
+	    my $sid = $self->getSeriesId($name, $nocache);
+	    &verbose(1, "TVDB::API: Get rating for $user for $name ($sid)\n");
+	    $data = $self->_downloadApikeyXml($Url{getRatingsForUser}, $user, $sid);
+    } else {
+	    &verbose(1, "TVDB::API: Get rating for $user\n");
+	    $data = $self->_downloadApikeyXml($Url{getRatingsForUserAll}, $user);
+    }
+    return undef unless $data;
+
+	return $data;
 }
 
 ###############################################################################
@@ -824,10 +878,13 @@ TVDB::API - API to www.thetvdb.com
   my $int = $tvdb->getMaxEpisode($series, $season, [$nocache]);
   my $hashref = $tvdb->getEpisode($series, $season, $episode, [$nocache]);
   my $hashref = $tvdb->getEpisodeId($episodeid, [$nocache]);
+  my $hashref = $tvdb->getEpisodeByAirDate($series, $airdate, [$nocache]);
   my $string = $tvdb->getEpisodeInfo($series, $season, $episode, $info, [$nocache]);
   my $string = $tvdb->getEpisodeBanner($series, $season, $episode, [$nocache]);
   my $string = $tvdb->getEpisodeName($series, $season, $episode, [$nocache]);
   my $string = $tvdb->getEpisodeOverview($series, $season, $episode, [$nocache]);
+
+  my $hashref = $tvdb->getRatingsForUser($userid, $series, [$nocache]);
 
   $tvdb->dumpCache();
 
@@ -875,24 +932,24 @@ Returns:
     zip => @zip_mirrors,
   }
 
-=item setMirrors(MIRROR, [BANNER, [ZIP]]);
+=item setMirrors(MIRROR, [BANNER, [ZIP]])
 
 Set the mirror site(s) to be used to download tv info. If C<BANNER> or C<ZIP>
 or not specified, then C<MIRROR> is used instead.
 
-=item chooseMirrors([NOCACHE]);
+=item chooseMirrors([NOCACHE])
 
 Choose a random mirror from the list of available mirrors.  If C<NOCACHE> is
 non-zero, then the mirrors are downloaded again even if they are in the cache
 database already.
 
-=item getAvailableLanguages([NOCACHE]);
+=item getAvailableLanguages([NOCACHE])
 
 Get a list of available languages, and return them in a hashref.  If C<NOCACHE>
 is non-zero, then the available languages are downloaded again even if they are
 in the cache database already.
 
-=item getUpdates([PERIOD]);
+=item getUpdates([PERIOD])
 
 Get appropriate updates (day/week/month/all) from thetvdb.com based on the
 specified C<PERIOD>.  It then downloads updates for series, episodes, and
@@ -931,37 +988,37 @@ last 6 hours, do nothing. This is the default C<PERIOD>
 
 If C<NOWAIT> is non-zero, then get updates despite having checked recently.
 
-=item getSeriesId(SERIESNAME, [NOCACHE]);
+=item getSeriesId(SERIESNAME, [NOCACHE])
 
 Get the series id (an integer) for C<SERIESNAME> from thetvtb.com. If
 C<NOCACHE> is non-zero, then the series id is downloaded again even if it is in
 the cache database already.
 
-=item getSeriesName(SERIESID, [NOCACHE]);
+=item getSeriesName(SERIESID, [NOCACHE])
 
 Get the series name (a string) for C<SERIESID>. If C<NOCACHE> is non-zero, then
 the series name is downloaded again even if it is in the cache database
 already.
 
-=item getSeries(SERIESNAME, [NOCACHE]);
+=item getSeries(SERIESNAME, [NOCACHE])
 
 Get the series info for C<SERIESNAME> from thetvtb.com, which is returned as a
 hashref. If C<NOCACHE> is non-zero, then the series info is downloaded again
 even if it is in the cache database already.
 
-=item getSeriesAll(SERIESNAME, [NOCACHE]);
+=item getSeriesAll(SERIESNAME, [NOCACHE])
 
 Get the series info, and all episodes for C<SERIESNAME> from thetvtb.com, which
 is returned as a hashref. If C<NOCACHE> is non-zero, then the series info and
 episodes are downloaded again even if they are in the cache database already.
 
-=item getSeriesActors(SERIESNAME, [NOCACHE]);
+=item getSeriesActors(SERIESNAME, [NOCACHE])
 
 Get the actors for C<SERIESNAME> from thetvtb.com, which is returned as a
 hashref. If C<NOCACHE> is non-zero, then the list of actors are
 downloaded again even if they are in the cache database already.
 
-=item getSeriesBanners(SERIESNAME, TYPE, TYPE2, VALUE, [NOCACHE]);
+=item getSeriesBanners(SERIESNAME, TYPE, TYPE2, VALUE, [NOCACHE])
 
 Get the banners for C<SERIESNAME> from thetvtb.com. Info about the available
 banners are returned in a hashref.  The actual banners can be downloaded
@@ -976,12 +1033,12 @@ that sub type.  If C<TYPE> is "series" then C<TYPE2> can be "text",
 or "seasonwide" and C<VALUE> specifies the season number.  If C<TYPE> is
 "fanart" then C<TYPE2> is the desired resolution of the image.
 
-=item getSeriesInfo(SERIESNAME, KEY, [NOCACHE]);
+=item getSeriesInfo(SERIESNAME, KEY, [NOCACHE])
 
 Return a string for C<KEY> in the hashref for C<SERIESNAME>.  If C<NOCACHE> is
 non-zero, then the series is downloaded again even if it is in the cache database already.
 
-=item getSeriesBanner(SERIESNAME, [BUFFER, [NOCACHE]]);
+=item getSeriesBanner(SERIESNAME, [BUFFER, [NOCACHE]])
 
 Get the C<SERIESNAME> banner from thetvdb.com and save it in the C<BannerPath>
 directory.  The cached banner is updated via C<getUpdates> when appropriate. If
@@ -990,7 +1047,7 @@ from the cache) is loaded into it. If C<NOCACHE> is non-zero, then the banner
 is downloaded again even if it is in the C<BannerPath> directory already. It
 will return the path of the banner relative to the C<BannerPath> directory.
 
-=item getSeriesFanart(SERIESNAME, [BUFFER, [NOCACHE]]);
+=item getSeriesFanart(SERIESNAME, [BUFFER, [NOCACHE]])
 
 Get the C<SERIESNAME> fan art from thetvdb.com and save it in the C<BannerPath>
 directory.  The cached fan art is updated via C<getUpdates> when appropriate.
@@ -999,7 +1056,7 @@ or from the cache) is loaded into it. If C<NOCACHE> is non-zero, then the fan
 art is downloaded again even if it is in the C<BannerPath> directory already.
 It will return the path of the fan art relative to the C<BannerPath> directory.
 
-=item getSeriesPoster(SERIESNAME, [BUFFER, [NOCACHE]]);
+=item getSeriesPoster(SERIESNAME, [BUFFER, [NOCACHE]])
 
 Get the C<SERIESNAME> poster from thetvdb.com and save it in the C<BannerPath>
 directory.  The cached poster is updated via C<getUpdates> when appropriate.
@@ -1009,13 +1066,13 @@ poster is downloaded again even if it is in the C<BannerPath> directory
 already. It will return the path of the poster relative to the C<BannerPath>
 directory.
 
-=item getSeriesOverview(SERIESNAME, [NOCACHE]);
+=item getSeriesOverview(SERIESNAME, [NOCACHE])
 
 Get the series overview from thetvdb.com and return it as a string. If
 C<NOCACHE> is non-zero, then the banner is downloaded again even if it is in
 the cache database already.
 
-=item getBanner(BANNER, [BUFFER, [NOCACHE]]);
+=item getBanner(BANNER, [BUFFER, [NOCACHE]])
 
 Get the C<BANNER> from thetvdb.com and save it in the C<BannerPath> directory.
 The cached banner is updated via C<getUpdates> when appropriate. If a C<BUFFER>
@@ -1025,26 +1082,26 @@ downloaded again even if it is in the C<BannerPath> directory already. It will
 return the path of the picture relative to the C<BannerPath> directory.  In
 this case it will just be the same as C<BANNER>.
 
-=item getMaxSeason(SERIESNAME, [NOCACHE]);
+=item getMaxSeason(SERIESNAME, [NOCACHE])
 
 Return the number of the last season for C<SERIESNAME>.  If C<NOCACHE> is
 non-zero, then any series info needed to calculate this is downloaded again
 even if it is in the cache database already.
 
-=item getSeason(SERIESNAME, SEASON, [NOCACHE]);
+=item getSeason(SERIESNAME, SEASON, [NOCACHE])
 
 Return a hashref of episodes in C<SEASON> for C<SERIESNAME>.  If C<NOCACHE> is
 non-zero, then any episodes needed for this season is downloaded again even if
 it is in the cache database already.
 
-=item getSeasonBanners(SERIESNAME, SEASON, [NOCACHE]);
+=item getSeasonBanners(SERIESNAME, SEASON, [NOCACHE])
 
 Return an array of banner names for C<SEASON> for C<SERIESNAME>.  These names
 can get used with C<getBanner()> to actually download the banner file. If
 C<NOCACHE> is non-zero, then any data needed for this is downloaded again even
 if it is in the cache database already.
 
-=item getSeasonBanner(SERIESNAME, SEASON, [BUFFER, [NOCACHE]]);
+=item getSeasonBanner(SERIESNAME, SEASON, [BUFFER, [NOCACHE]])
 
 Get a random banner for C<SEASON> for C<SERIESNAME>.  The cached banner is
 updated via C<getUpdates> when appropriate.  If a C<BUFFER> is provided (a
@@ -1053,14 +1110,14 @@ into it.  If C<NOCACHE> is non-zero, then the banner is downloaded again even
 if it is in the C<BannerPath> directory already. It will return the path of the
 banner relative to the C<BannerPath> directory.
 
-=item getSeasonBannersWide(SERIESNAME, SEASON, [NOCACHE]);
+=item getSeasonBannersWide(SERIESNAME, SEASON, [NOCACHE])
 
 Return an array of wide banner names for C<SEASON> for C<SERIESNAME>.  These
 names can get used with C<getBanner()> to actually download the banner file. If
 C<NOCACHE> is non-zero, then any data needed for this is downloaded again even
 if it is in the C<BannerPath> directory already.
 
-=item getSeasonBannerWide(SERIESNAME, SEASON, [BUFFER, [NOCACHE]]);
+=item getSeasonBannerWide(SERIESNAME, SEASON, [BUFFER, [NOCACHE]])
 
 Get a random banner for C<SEASON> for C<SERIESNAME>.  The cached banner is
 updated via C<getUpdates> when appropriate.  If a C<BUFFER> is provided (a
@@ -1069,31 +1126,44 @@ into it.  If C<NOCACHE> is non-zero, then the banner is downloaded again even
 if it is in the C<BannerPath> directory already. It will return the path of the
 banner relative to the C<BannerPath> directory.
 
-=item getMaxEpisode(SERIESNAME, SEASON, [NOCACHE]);
+=item getMaxEpisode(SERIESNAME, SEASON, [NOCACHE])
 
 Return the number episodes in C<SEASON> for C<SERIESNAME>.  If C<NOCACHE> is
 non-zero, then any series info needed to calculate this is downloaded again
 even if it is in the cache database already.
 
-=item getEpisode(SERIESNAME, SEASON, EPISODE, [NOCACHE]);
+=item getEpisode(SERIESNAME, SEASON, EPISODE, [NOCACHE])
 
 Return a hashref for the C<EPISODE> in C<SEASON> for C<SERIESNAME>.  If
 C<NOCACHE> is non-zero, then the episode is downloaded again even if it is in
 the cache database already.
 
-=item getEpisodeId(EPISODEID, [NOCACHE]);
+=item getEpisodeId(EPISODEID, [NOCACHE])
 
 Return a hashref for the episode indicated by C<EPISODEID>.  If C<NOCACHE> is
 non-zero, then the episode is downloaded again even if it is in the
 cache database already.
 
-=item getEpisodeInfo(SERIESNAME, SEASON, EPISODE, KEY, [NOCACHE]);
+=item getEpisodeByAirDate(SERIESNAME, AIRDATE [NOCACHE])
+
+Return a hashref for the episode in C<SERIESNAME> on C<AIRDATE>. C<AIRDATE> can
+be specified as:
+
+    2008-01-01
+    2008-1-1
+    January 1, 2008
+    1/1/2008
+
+Currently this lookup is not cached.  However, if C<NOCACHE> is non-zero, then
+the C<SERIESNAME> to seriesid lookup is downloaded again.
+
+=item getEpisodeInfo(SERIESNAME, SEASON, EPISODE, KEY, [NOCACHE])
 
 Return a string for C<KEY> in the hashref for C<EPISODE> in C<SEASON> for
 C<SERIESNAME>.  If C<NOCACHE> is non-zero, then the episode is downloaded again
 even if it is in the cache database already.
 
-=item getEpisodeBanner(SERIESNAME, SEASON, EPISODE, [BUFFER, [NOCACHE]]);
+=item getEpisodeBanner(SERIESNAME, SEASON, EPISODE, [BUFFER, [NOCACHE]])
 
 Get the episode banner for C<EPISODE> in C<SEASON> for C<SERIESNAME>.  The
 cached banner is updated via C<getUpdates> when appropriate.  If a C<BUFFER> is
@@ -1102,17 +1172,24 @@ If C<NOCACHE> is non-zero, then the banner is downloaded again even if it is in
 the C<BannerPath> directory already. It will return the path of the picture
 relative to the C<BannerPath> directory.
 
-=item getEpisodeName(SERIESNAME, SEASON, EPISODE, [NOCACHE]);
+=item getEpisodeName(SERIESNAME, SEASON, EPISODE, [NOCACHE])
 
 Return the episode name for C<EPISODE> in C<SEASON> for C<SERIESNAME>.  If
 C<NOCACHE> is non-zero, then the episode is downloaded again even if it is in
 the cache database already.
 
-=item getEpisodeOverview(SERIESNAME, SEASON, EPISODE, [NOCACHE]);
+=item getEpisodeOverview(SERIESNAME, SEASON, EPISODE, [NOCACHE])
 
 Return the overview for C<EPISODE> in C<SEASON> for C<SERIESNAME>.  If
 C<NOCACHE> is non-zero, then the episode is downloaded again even if it is in
 the cache database already.
+
+=item getRatingsForUser(USERID, SERIESNAME, [NOCACHE])
+
+Get the series ratings for C<USERID>. If C<SERIESNAME> is specified, the
+user/community ratings for the series and its episodes are returned in a
+hashref.  If C<SERIESNAME> is not specified, then all the series rated by the
+<USERID> will be returned in a hashref.  These lookups are not cached.
 
 =item dumpCache()
 
